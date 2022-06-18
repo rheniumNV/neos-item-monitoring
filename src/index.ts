@@ -156,9 +156,10 @@ async function main() {
           0,
           "plain_text",
         ]),
+        active: _.get(page, ["properties", "Active", "checkbox"]),
       };
     })
-    .filter(({ ownerId, recordId }) => ownerId && recordId);
+    .filter(({ ownerId, recordId, active }) => ownerId && recordId && active);
 
   console.info("firstLinks:", linkQueue);
 
@@ -191,11 +192,11 @@ async function main() {
       });
 
       console.info(
-        `link resolved. ownerId=${link.ownerId} recordId=${link.recordId}`
+        `link resolved. name=${link.name} ownerId=${link.ownerId} recordId=${link.recordId}`
       );
     } catch (e) {
       console.error(
-        `link error. ownerId=${link.ownerId} recordId=${link.recordId} `,
+        `link error. name=${link.name} ownerId=${link.ownerId} recordId=${link.recordId} `,
         e
       );
     }
