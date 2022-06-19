@@ -9,6 +9,7 @@ const {
   NOTION_TOKEN,
   NOTION_DATABASE_ID,
   CHECK_INTERVAL,
+  REQUEST_INTERVAL,
 } = process.env;
 
 type NeosLink = { name: string; ownerId: string; recordId: string };
@@ -165,6 +166,8 @@ async function main() {
   try {
     const checkInterval =
       Number(CHECK_INTERVAL) > 0 ? Number(CHECK_INTERVAL) : 1;
+    const requestInterval =
+      Number(REQUEST_INTERVAL) > 0 ? Number(REQUEST_INTERVAL) : 1;
 
     const processStartTime = performance.now();
 
@@ -174,7 +177,7 @@ async function main() {
     const newItemEndTime = moment().startOf("day");
 
     logInfo(
-      `start checking.(${newItemStartTime}-${newItemEndTime}). checkInterval=${checkInterval}`
+      `start checking.(${newItemStartTime}-${newItemEndTime}). checkInterval: ${checkInterval}`
     );
 
     await sendDiscordMessage(JOB_REPORT_DISCORD_WEBHOOK, {
@@ -224,7 +227,7 @@ async function main() {
         const result = await resolveLink(link);
         const endTime = performance.now();
 
-        const sleepTime = 1000 - (endTime - startTime);
+        const sleepTime = requestInterval * 1000 - (endTime - startTime);
         if (sleepTime > 0) {
           await sleep(sleepTime);
         }
@@ -242,11 +245,11 @@ async function main() {
         });
 
         logInfo(
-          `link resolved. name=${link.name} ownerId=${link.ownerId} recordId=${link.recordId}`
+          `link resolved. name: ${link.name} recordUri: neosrec:///${link.ownerId}/${link.recordId}`
         );
       } catch (e) {
         logError(
-          `link error. name=${link.name} ownerId=${link.ownerId} recordId=${link.recordId} `,
+          `link error. name: ${link.name} recordUri: neosrec:///${link.ownerId}/${link.recordId}`,
           e
         );
       }
