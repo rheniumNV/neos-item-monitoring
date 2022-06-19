@@ -5,6 +5,7 @@ import moment from "moment";
 
 const {
   NEW_ITEM_NOTIFICATION_DISCORD_WEBHOOK,
+  JOB_REPORT_DISCORD_WEBHOOK,
   NOTION_TOKEN,
   NOTION_DATABASE_ID,
   CHECK_INTERVAL,
@@ -34,6 +35,22 @@ type NeosRawRecord = {
   creationTime: string;
   thumbnailUri: string;
 };
+
+const jobCode = `${moment().format("HHMMss")}${Math.floor(
+  Math.random() * 999
+)}`;
+
+function logInfo(...arg: any[]) {
+  console.info(jobCode, ...arg);
+}
+
+function logWarn(...arg: any[]) {
+  console.warn(jobCode, ...arg);
+}
+
+function logError(...arg: any[]) {
+  console.error(jobCode, ...arg);
+}
 
 async function sleep(waitTime: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, waitTime));
@@ -98,10 +115,35 @@ async function resolveLink(link: NeosLink): Promise<{
   };
 }
 
+async function sendDiscordMessage(webhookUrl: string, body: any) {
+  while (true) {
+    try {
+      await axios.post(webhookUrl, body);
+      return;
+    } catch (e) {
+      const status = _.get(e, ["response", "status"]);
+      const retryAfter = _.get(e, ["response", "data", "retry_after"]);
+      if (status === 429 && retryAfter > 0) {
+        logWarn(`discord rate limit. retryAfter=${retryAfter}`);
+        await sleep(retryAfter + 500);
+      } else {
+        logError("discord webhook error.", e);
+        return;
+      }
+    }
+  }
+}
+
 async function main() {
   if (typeof NEW_ITEM_NOTIFICATION_DISCORD_WEBHOOK !== "string") {
     throw new Error(
       `NEW_ITEM_NOTIFICATION_DISCORD_WEBHOOK is not string.NEW_ITEM_NOTIFICATION_DISCORD_WEBHOOK=${NEW_ITEM_NOTIFICATION_DISCORD_WEBHOOK}`
+    );
+  }
+
+  if (typeof JOB_REPORT_DISCORD_WEBHOOK !== "string") {
+    throw new Error(
+      `JOB_REPORT_DISCORD_WEBHOOK is not string.JOB_REPORT_DISCORD_WEBHOOK=${JOB_REPORT_DISCORD_WEBHOOK}`
     );
   }
 
@@ -120,146 +162,166 @@ async function main() {
     );
   }
 
-  const checkInterval = Number(CHECK_INTERVAL);
+  try {
+    const checkInterval =
+      Number(CHECK_INTERVAL) > 0 ? Number(CHECK_INTERVAL) : 1;
 
-  const processStartTime = performance.now();
+    const processStartTime = performance.now();
 
-  const newItemStartTime = moment()
-    .startOf("day")
-    .subtract(checkInterval > 0 ? checkInterval : 3, "days");
-  const newItemEndTime = moment().startOf("day");
+    const newItemStartTime = moment()
+      .startOf("day")
+      .subtract(checkInterval, "days");
+    const newItemEndTime = moment().startOf("day");
 
-  console.info(`start checking.(${newItemStartTime}-${newItemEndTime})`);
+    logInfo(
+      `start checking.(${newItemStartTime}-${newItemEndTime}). checkInterval=${checkInterval}`
+    );
 
-  const objectMap = new Map<string, any>();
-  const linkMap = new Map<string, any>();
+    await sendDiscordMessage(JOB_REPORT_DISCORD_WEBHOOK, {
+      content: `start checking.(${newItemStartTime}-${newItemEndTime}). checkInterval=${checkInterval}. jobCode=${jobCode}`,
+    });
 
-  const linkQueue: NeosLink[] = (
-    await new Client({ auth: NOTION_TOKEN }).databases.query({
-      database_id: NOTION_DATABASE_ID,
-    })
-  )?.results
-    .map((page) => {
-      return {
-        name: _.get(page, ["properties", "Name", "title", 0, "plain_text"]),
-        ownerId: _.get(page, [
-          "properties",
-          "OwnerId",
-          "rich_text",
-          0,
-          "plain_text",
-        ]),
-        recordId: _.get(page, [
-          "properties",
-          "RecordId",
-          "rich_text",
-          0,
-          "plain_text",
-        ]),
-        active: _.get(page, ["properties", "Active", "checkbox"]),
-      };
-    })
-    .filter(({ ownerId, recordId, active }) => ownerId && recordId && active);
+    const objectMap = new Map<string, any>();
+    const linkMap = new Map<string, any>();
 
-  console.info("firstLinks:", linkQueue);
+    const linkQueue: NeosLink[] = (
+      await new Client({ auth: NOTION_TOKEN }).databases.query({
+        database_id: NOTION_DATABASE_ID,
+      })
+    )?.results
+      .map((page) => {
+        return {
+          name: _.get(page, ["properties", "Name", "title", 0, "plain_text"]),
+          ownerId: _.get(page, [
+            "properties",
+            "OwnerId",
+            "rich_text",
+            0,
+            "plain_text",
+          ]),
+          recordId: _.get(page, [
+            "properties",
+            "RecordId",
+            "rich_text",
+            0,
+            "plain_text",
+          ]),
+          active: _.get(page, ["properties", "Active", "checkbox"]),
+        };
+      })
+      .filter(({ ownerId, recordId, active }) => ownerId && recordId && active);
 
-  linkQueue.forEach((link) => {
-    linkMap.set(`${link.ownerId}/${link.recordId}`, link);
-  });
+    logInfo("firstLinks:", linkQueue);
 
-  while (linkQueue.length > 0) {
-    const link = _.first(linkQueue) as NeosLink;
-    try {
-      const startTime = performance.now();
-      const result = await resolveLink(link);
-      const endTime = performance.now();
+    linkQueue.forEach((link) => {
+      linkMap.set(`${link.ownerId}/${link.recordId}`, link);
+    });
 
-      const sleepTime = 1000 - (endTime - startTime);
-      if (sleepTime > 0) {
-        await sleep(sleepTime);
+    while (linkQueue.length > 0) {
+      const link = _.first(linkQueue) as NeosLink;
+      try {
+        const startTime = performance.now();
+        const result = await resolveLink(link);
+        const endTime = performance.now();
+
+        const sleepTime = 1000 - (endTime - startTime);
+        if (sleepTime > 0) {
+          await sleep(sleepTime);
+        }
+
+        result.objects.forEach((object) => {
+          objectMap.set(object.id, object);
+        });
+
+        result.links.forEach((link) => {
+          const key = `${link.ownerId}/${link.recordId}`;
+          if (!linkMap.has(key)) {
+            linkMap.set(key, link);
+            linkQueue.push(link);
+          }
+        });
+
+        logInfo(
+          `link resolved. name=${link.name} ownerId=${link.ownerId} recordId=${link.recordId}`
+        );
+      } catch (e) {
+        logError(
+          `link error. name=${link.name} ownerId=${link.ownerId} recordId=${link.recordId} `,
+          e
+        );
       }
 
-      result.objects.forEach((object) => {
-        objectMap.set(object.id, object);
-      });
-
-      result.links.forEach((link) => {
-        const key = `${link.ownerId}/${link.recordId}`;
-        if (!linkMap.has(key)) {
-          linkMap.set(key, link);
-          linkQueue.push(link);
-        }
-      });
-
-      console.info(
-        `link resolved. name=${link.name} ownerId=${link.ownerId} recordId=${link.recordId}`
-      );
-    } catch (e) {
-      console.error(
-        `link error. name=${link.name} ownerId=${link.ownerId} recordId=${link.recordId} `,
-        e
-      );
+      linkQueue.shift();
     }
 
-    linkQueue.shift();
-  }
+    const newItems: any[] = [];
+    objectMap.forEach((object) => {
+      const { creationTime } = object;
+      if (
+        moment(creationTime).isAfter(newItemStartTime) &&
+        moment(creationTime).isBefore(newItemEndTime)
+      ) {
+        newItems.push(object);
+      }
+    });
 
-  const newItems: any[] = [];
-  objectMap.forEach((object) => {
-    const { creationTime } = object;
-    if (
-      moment(creationTime).isAfter(newItemStartTime) &&
-      moment(creationTime).isBefore(newItemEndTime)
-    ) {
-      newItems.push(object);
-    }
-  });
+    logInfo("checked link count:", linkMap.size);
+    logInfo("checked object count:", objectMap.size);
+    logInfo("newItem count:", newItems.length);
+    logInfo("newItems:", newItems);
 
-  console.info("checked link count:", linkMap.size);
-  console.info("checked object count:", objectMap.size);
-  console.info("newItem count:", newItems.length);
-  console.info("newItems:", newItems);
-
-  const embeds = newItems.map((item) => {
-    const thumbnailAssetId = _.first(
-      _.split(_.last(_.split(item.thumbnailUri, "/")), ".")
-    );
-    const thumbnailWebUri = `https://cloudxstorage.blob.core.windows.net/assets/${thumbnailAssetId}`;
-    return {
-      title: item.name,
-      thumbnail: {
-        url: thumbnailWebUri,
-      },
-      author: { name: item.ownerId },
-      timestamp: item.creationTime,
-      fields: [
-        { name: "assetUrl", value: item.assetUri },
-        {
-          name: "inventory",
-          value: `[${item.link.name}](https://util.neos.love/inventory/v1/link/${item.link.ownerId}/${item.link.recordId})`,
+    const embeds = newItems.map((item) => {
+      const thumbnailAssetId = _.first(
+        _.split(_.last(_.split(item.thumbnailUri, "/")), ".")
+      );
+      const thumbnailWebUri = `https://cloudxstorage.blob.core.windows.net/assets/${thumbnailAssetId}`;
+      return {
+        title: item.name,
+        thumbnail: {
+          url: thumbnailWebUri,
         },
-      ],
-    };
-  });
+        author: { name: item.ownerId },
+        timestamp: item.creationTime,
+        fields: [
+          { name: "assetUrl", value: item.assetUri },
+          {
+            name: "inventory",
+            value: `[${item.link.name}](https://util.neos.love/inventory/v1/link/${item.link.ownerId}/${item.link.recordId})`,
+          },
+        ],
+      };
+    });
 
-  await Promise.all(
-    _.chunk(embeds, 10).map((chunkedEmbeds) => {
-      return axios
-        .post(NEW_ITEM_NOTIFICATION_DISCORD_WEBHOOK, {
+    await Promise.all(
+      _.chunk(embeds, 10).map((chunkedEmbeds) => {
+        return sendDiscordMessage(NEW_ITEM_NOTIFICATION_DISCORD_WEBHOOK, {
           embeds: chunkedEmbeds,
-        })
-        .catch((e) => {
-          console.error("discord webhook error.", e);
         });
-    })
-  );
+      })
+    );
 
-  const processEndTime = performance.now();
-  console.info(
-    `finish checking.(${newItemStartTime}-${newItemEndTime}). processTime: ${
-      processEndTime - processStartTime
-    }`
-  );
+    const processEndTime = performance.now();
+
+    await sendDiscordMessage(JOB_REPORT_DISCORD_WEBHOOK, {
+      content: `finish checking.(${newItemStartTime}-${newItemEndTime}). processTime: ${
+        processEndTime - processStartTime
+      }. checked link count:${linkMap.size}. checked object count:${
+        objectMap.size
+      }. new item count:${newItems.length}. jobCode=${jobCode}`,
+    });
+
+    logInfo(
+      `finish checking.(${newItemStartTime}-${newItemEndTime}). processTime: ${
+        processEndTime - processStartTime
+      }`
+    );
+  } catch (e) {
+    logError(e);
+
+    await sendDiscordMessage(JOB_REPORT_DISCORD_WEBHOOK, {
+      content: `unknown error. jobCode=${jobCode}`,
+    });
+  }
 }
 
 main();
