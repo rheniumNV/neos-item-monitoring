@@ -4,9 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node -r dotenv/config ./build/index.js",
+    "start": "node -r dotenv/config ./build/job/newItemNotification/index.js",
     "build": "npx tsc",
-    "dev": "npx ts-node -r dotenv/config ./src/index.ts",
+    "dev": "npx ts-node -r dotenv/config ./src/job/newItemNotification/index.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "rhenium",
