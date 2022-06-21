@@ -11,6 +11,7 @@ export type NeosRawRecord = {
   tag: string[];
   creationTime: string;
   thumbnailUri: string;
+  lastModifyingUserId: string;
 };
 
 export async function getNeosRecords(
@@ -23,7 +24,7 @@ export async function getNeosRecords(
       `https://api.neos.com/api/${ownerType}/${ownerId}/records/${recordId}`
     )
   )?.data;
-  const fixedPath = _.join([path, name], "\\");
+  const fixedPath = encodeURIComponent(_.join([path, name], "\\"));
   const response = await axios.get(
     `https://api.neos.com/api/users/${ownerId}/records?path=${fixedPath}`
   );

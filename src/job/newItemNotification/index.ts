@@ -1,11 +1,12 @@
 import _ from "lodash";
 import moment from "moment";
 import { logInfo, logError } from "../../lib/log";
-import { sendDiscordMessage } from "../../lib/discord";
+import DiscordClient from "../../lib/discord";
 import { loadConfig } from "./configLoader";
 import { jobCode } from "../../lib/jobCode";
 import { getNeosRecords, NeosRawRecord } from "../../lib/neos";
 import { sleep } from "../../lib/util";
+import { MessagePayload, MessageOptions } from "discord.js";
 
 type NeosLink = { name: string; ownerId: string; recordId: string };
 
@@ -17,6 +18,7 @@ type NeosObject = {
   creationTime: string;
   assetUri: string;
   thumbnailUri: string;
+  lastModifyingUserId: string;
   link: NeosLink;
 };
 
@@ -48,6 +50,7 @@ async function resolveLink(link: NeosLink): Promise<{
         name,
         creationTime,
         thumbnailUri,
+        lastModifyingUserId,
       }: NeosRawRecord) => ({
         id,
         path,
@@ -56,6 +59,7 @@ async function resolveLink(link: NeosLink): Promise<{
         creationTime,
         assetUri,
         thumbnailUri,
+        lastModifyingUserId,
         link,
       })
     );
@@ -65,25 +69,76 @@ async function resolveLink(link: NeosLink): Promise<{
   };
 }
 
+function generateEmbed(item: NeosObject) {
+  const thumbnailAssetId = _.first(
+    _.split(_.last(_.split(item.thumbnailUri, "/")), ".")
+  );
+  const thumbnailWebUri = `https://cloudxstorage.blob.core.windows.net/assets/${thumbnailAssetId}`;
+  return {
+    title: item.name,
+    thumbnail: {
+      url: thumbnailWebUri,
+    },
+    author: { name: item.lastModifyingUserId },
+    timestamp: item.creationTime,
+    fields: [
+      { name: "assetUrl", value: item.assetUri },
+      {
+        name: "inventory",
+        value: `[${item.link.name}](https://util.neos.love/inventory/v1/link/${item.link.ownerId}/${item.link.recordId})`,
+      },
+    ],
+  };
+}
+
 async function main() {
-  let jobReportDiscordWebhook = "";
+  let messageFunc = async (
+    _msg: string | MessagePayload | MessageOptions
+  ) => {};
   try {
     const processStartTime = performance.now();
 
     logInfo(`start job newItemNotification`);
 
     const {
-      newItemNotificationDiscordWebhook,
-      jobReportDiscordWebhook: JOB_REPORT_DISCORD_WEBHOOK,
       newItemStartTime,
       newItemEndTime,
       checkInterval,
       firstLinks,
       requestInterval,
+      discordToken,
+      discordGuildId,
+      jobReportDiscordChannelId,
+      newItemNotificationDiscordChannelId,
     } = await loadConfig();
-    jobReportDiscordWebhook = JOB_REPORT_DISCORD_WEBHOOK;
 
-    await sendDiscordMessage(jobReportDiscordWebhook, {
+    const discordClient = new DiscordClient({ token: discordToken });
+    const newItemNotificationChannel = await discordClient.getDiscordChannel(
+      discordGuildId,
+      newItemNotificationDiscordChannelId
+    );
+    const jobReportChannel = await discordClient.getDiscordChannel(
+      discordGuildId,
+      jobReportDiscordChannelId
+    );
+
+    if (!newItemNotificationChannel) {
+      throw new Error(
+        `newItemNotificationChannel is not found. guildID=${discordGuildId}. channelId=${newItemNotificationChannel}`
+      );
+    }
+
+    if (!jobReportChannel) {
+      throw new Error(
+        `jobReportChannel is not found. guildID=${discordGuildId}. channelId=${jobReportChannel}`
+      );
+    }
+
+    messageFunc = async (msg: string | MessagePayload | MessageOptions) => {
+      await discordClient.sendDiscordMessage(jobReportChannel, msg);
+    };
+
+    await discordClient.sendDiscordMessage(jobReportChannel, {
       content: `start checking.(${newItemStartTime}-${newItemEndTime}). checkInterval=${checkInterval}. jobCode=${jobCode}`,
     });
 
@@ -134,7 +189,7 @@ async function main() {
       linkQueue.shift();
     }
 
-    const newItems: any[] = [];
+    const newItems: NeosObject[] = [];
     objectMap.forEach((object) => {
       const { creationTime } = object;
       if (
@@ -150,39 +205,49 @@ async function main() {
     logInfo("newItem count:", newItems.length);
     logInfo("newItems:", newItems);
 
-    const embeds = newItems.map((item) => {
-      const thumbnailAssetId = _.first(
-        _.split(_.last(_.split(item.thumbnailUri, "/")), ".")
-      );
-      const thumbnailWebUri = `https://cloudxstorage.blob.core.windows.net/assets/${thumbnailAssetId}`;
-      return {
-        title: item.name,
-        thumbnail: {
-          url: thumbnailWebUri,
-        },
-        author: { name: item.ownerId },
-        timestamp: item.creationTime,
-        fields: [
-          { name: "assetUrl", value: item.assetUri },
-          {
-            name: "inventory",
-            value: `[${item.link.name}](https://util.neos.love/inventory/v1/link/${item.link.ownerId}/${item.link.recordId})`,
-          },
-        ],
-      };
-    });
+    const creators = _.map(
+      _.groupBy(newItems, ({ lastModifyingUserId }) => lastModifyingUserId),
+      (list, key) => {
+        return {
+          ownerId: key,
+          items: _(list)
+            .uniqBy(({ name }) => name)
+            .sortBy(({ creationTime }) => creationTime)
+            .value(),
+        };
+      }
+    );
 
     await Promise.all(
-      _.chunk(embeds, 10).map((chunkedEmbeds) => {
-        return sendDiscordMessage(newItemNotificationDiscordWebhook, {
-          embeds: chunkedEmbeds,
-        });
+      creators.map((creator) => {
+        return (async () => {
+          const rootMessage = await discordClient.sendDiscordMessage(
+            newItemNotificationChannel,
+            {
+              content: `${creator.items.length} items that ${
+                creator.ownerId
+              } saved from ${newItemStartTime.format(
+                "YYYY M/D"
+              )} to ${checkInterval}days.`,
+            }
+          );
+
+          await Promise.all(
+            _.chunk(creator.items, 10).map((items) => {
+              return (async () => {
+                await discordClient.sendDiscordThreadMessage(rootMessage, {
+                  embeds: items.map(generateEmbed),
+                });
+              })();
+            })
+          );
+        })();
       })
     );
 
     const processEndTime = performance.now();
 
-    await sendDiscordMessage(jobReportDiscordWebhook, {
+    await discordClient.sendDiscordMessage(jobReportChannel, {
       content: `finish checking.(${newItemStartTime}-${newItemEndTime}). processTime: ${
         processEndTime - processStartTime
       }. checked link count:${linkMap.size}. checked object count:${
@@ -195,10 +260,12 @@ async function main() {
         processEndTime - processStartTime
       }`
     );
+
+    await discordClient.destroy();
   } catch (e) {
     logError(e);
 
-    await sendDiscordMessage(jobReportDiscordWebhook, {
+    await messageFunc({
       content: `unknown error. jobCode=${jobCode}`,
     });
   }
