@@ -30,3 +30,25 @@ export async function getNeosRecords(
   );
   return response.data ?? [];
 }
+
+export type NeosUser = {
+  id: string;
+  username: string;
+  profile: {
+    iconUrl: string;
+  };
+};
+
+export async function getUserInfo(ownerId: string): Promise<NeosUser> {
+  return (await axios.get(`https://api.neos.com/api/users/${ownerId}`)).data;
+}
+
+export function getIdFromAssetUri(assetUri: string): string | undefined {
+  return _.first(_.split(_.last(_.split(assetUri, "/")), "."));
+}
+
+export function getWebUrlFromAssetUri(assetUri: string): string {
+  return `https://cloudxstorage.blob.core.windows.net/assets/${getIdFromAssetUri(
+    assetUri
+  )}`;
+}

@@ -4,7 +4,12 @@ import { logInfo, logError } from "../../lib/log";
 import DiscordClient from "../../lib/discord";
 import { loadConfig } from "./configLoader";
 import { jobCode } from "../../lib/jobCode";
-import { getNeosRecords, NeosRawRecord } from "../../lib/neos";
+import {
+  getNeosRecords,
+  getUserInfo,
+  getWebUrlFromAssetUri,
+  NeosRawRecord,
+} from "../../lib/neos";
 import { sleep } from "../../lib/util";
 import { MessagePayload, MessageOptions } from "discord.js";
 
@@ -70,14 +75,10 @@ async function resolveLink(link: NeosLink): Promise<{
 }
 
 function generateEmbed(item: NeosObject) {
-  const thumbnailAssetId = _.first(
-    _.split(_.last(_.split(item.thumbnailUri, "/")), ".")
-  );
-  const thumbnailWebUri = `https://cloudxstorage.blob.core.windows.net/assets/${thumbnailAssetId}`;
   return {
     title: item.name,
     thumbnail: {
-      url: thumbnailWebUri,
+      url: getWebUrlFromAssetUri(item.thumbnailUri),
     },
     author: { name: item.lastModifyingUserId },
     timestamp: item.creationTime,
@@ -218,32 +219,68 @@ async function main() {
       }
     );
 
-    await Promise.all(
-      creators.map((creator) => {
-        return (async () => {
-          const rootMessage = await discordClient.sendDiscordMessage(
-            newItemNotificationChannel,
-            {
-              content: `${creator.items.length} items that ${
-                creator.ownerId
-              } saved from ${newItemStartTime.format(
-                "YYYY M/D"
-              )} to ${checkInterval}days.`,
-            }
-          );
+    const splitCount = 3;
 
-          await Promise.all(
-            _.chunk(creator.items, 10).map((items) => {
-              return (async () => {
-                await discordClient.sendDiscordThreadMessage(rootMessage, {
-                  embeds: items.map(generateEmbed),
-                });
-              })();
-            })
-          );
-        })();
-      })
-    );
+    const tasks = creators.map((creator) => {
+      return async () => {
+        const user = await getUserInfo(creator.ownerId);
+        const iconUrl = getWebUrlFromAssetUri(
+          _.get(user, ["profile", "iconUrl"], "")
+        );
+        const pickupItems = _.slice(creator.items, 0, splitCount);
+
+        console.log("user", user);
+        const rootMessage = await discordClient.sendDiscordMessage(
+          newItemNotificationChannel,
+          {
+            embeds: [
+              {
+                title: user.username,
+                description: `${
+                  creator.items.length
+                } items saved from ${newItemStartTime.format(
+                  "YYYY M/D"
+                )} to ${checkInterval}days.`,
+                thumbnail: {
+                  url: iconUrl,
+                },
+              },
+              ...pickupItems.map((item) => {
+                return {
+                  author: {
+                    name: item.name,
+                    icon_url: getWebUrlFromAssetUri(item.thumbnailUri),
+                    url: `https://util.neos.love/inventory/v1/link/${item.link.ownerId}/${item.link.recordId}`,
+                  },
+                  description: `[${item.path}](https://util.neos.love/inventory/v1/link/${item.link.ownerId}/${item.link.recordId})`,
+                };
+              }),
+              ...(creator.items.length > splitCount
+                ? [{ title: `more ${creator.items.length - splitCount} items` }]
+                : []),
+            ],
+          }
+        );
+
+        await Promise.all(
+          _.chunk(creator.items, 10).map((items) => {
+            return (async () => {
+              await discordClient.sendDiscordThreadMessage(rootMessage, {
+                embeds: items.map(generateEmbed),
+              });
+            })();
+          })
+        );
+      };
+    });
+
+    await Promise.all(tasks.map((task) => task()));
+
+    // (async () => {
+    //   for (let i = 0; i < tasks.length; i++) {
+    //     await tasks[i]();
+    //   }
+    // })();
 
     const processEndTime = performance.now();
 
