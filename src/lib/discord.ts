@@ -22,12 +22,6 @@ export default class DiscordClient {
     this.client.login(init.token);
   }
 
-  public static isTextChannel(
-    channel: undefined | null | AnyChannel
-  ): channel is TextChannel {
-    return _.has(channel, "send") !== undefined;
-  }
-
   private async wait2Ready() {
     while (!this.isReady) {
       await sleep(0.1);
@@ -51,9 +45,10 @@ export default class DiscordClient {
   ) {
     await this.wait2Ready();
 
-    if (!DiscordClient.isTextChannel(channel)) {
+    if (channel.type !== "GUILD_TEXT") {
       throw new Error(`channel is not TextChannel.`);
     }
+
     channel.threads;
 
     return channel.send(message);
@@ -77,6 +72,17 @@ export default class DiscordClient {
 
     if (targetMessage.hasThread) {
       return await targetMessage.thread?.send(message);
+    }
+  }
+
+  public async deleteThreadCreatedMessages(channel: Discord.TextChannel) {
+    const messages = await channel.messages.fetch();
+    const threadCreatedMessages = messages
+      .map((message) => (message.type === "THREAD_CREATED" ? message.id : ""))
+      .filter((id) => id !== "");
+    if (threadCreatedMessages.length > 0) {
+      await channel.bulkDelete(threadCreatedMessages);
+      await this.deleteThreadCreatedMessages(channel);
     }
   }
 

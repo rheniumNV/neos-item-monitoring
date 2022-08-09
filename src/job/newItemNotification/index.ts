@@ -118,10 +118,23 @@ async function main() {
       discordGuildId,
       newItemNotificationDiscordChannelId
     );
+    if (
+      !newItemNotificationChannel ||
+      newItemNotificationChannel?.type !== "GUILD_TEXT"
+    ) {
+      throw new Error(
+        `newItemNotificationChannel is not GUILD_TEXT. type=${newItemNotificationChannel?.type}`
+      );
+    }
     const jobReportChannel = await discordClient.getDiscordChannel(
       discordGuildId,
       jobReportDiscordChannelId
     );
+    if (!jobReportChannel || jobReportChannel?.type !== "GUILD_TEXT") {
+      throw new Error(
+        `jobReportChannel is not GUILD_TEXT. type=${jobReportChannel?.type}`
+      );
+    }
 
     if (!newItemNotificationChannel) {
       throw new Error(
@@ -291,6 +304,8 @@ async function main() {
         objectMap.size
       }. new item count:${newItems.length}. jobCode=${jobCode}`,
     });
+
+    await discordClient.deleteThreadCreatedMessages(newItemNotificationChannel);
 
     logInfo(
       `finish checking.(${newItemStartTime}-${newItemEndTime}). processTime: ${
